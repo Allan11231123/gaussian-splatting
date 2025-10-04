@@ -9,8 +9,11 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import os
+import os, sys
 import torch
+import cv2
+import numpy as np
+import torch.nn.functional as F
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -21,7 +24,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import ModelParams, PipelineParams, OptimizationParams, DrivingSceneParams
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -40,16 +43,75 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def bise_load_weights(model: torch.nn.Module, weights_path: str):
+    ckpt = torch.load(weights_path, map_location="cpu")
+    # Some ckpt may be in 'state_dict', some may be flattened
+    state = ckpt.get("state_dict", ckpt)
+    # get rid of possible 'module.' prefix
+    new_state = {}
+    for k, v in state.items():
+        nk = k.replace("module.", "")
+        new_state[nk] = v
+    missing, unexpected = model.load_state_dict(new_state, strict=False)
+    if missing:
+        print("[Warn] Missing keys:", missing[:10], "..." if len(missing) > 10 else "")
+    if unexpected:
+        print("[Warn] Unexpected keys:", unexpected[:10], "..." if len(unexpected) > 10 else "")
+@torch.no_grad()
+def infer_bisenetv2(bise_model, img_bgr, device="cpu"):
+    width, height = img_bgr.shape[1], img_bgr.shape[0]
+    new_height = height - height % 32
+    img = cv2.resize(img_bgr, (width, new_height), interpolation=cv2.INTER_LINEAR)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img = (img - mean) / std
+    img = img.transpose(2, 0, 1)  # HWC -> CHW
+    x = torch.from_numpy(img).unsqueeze(0).to(device)
+    out = bise_model(x)   # expected output: B, C=19, H, W (logits)
+    if isinstance(out, (list, tuple)):
+        out = out[0]  # some implementations return multi-scale, take main output
+    out = F.interpolate(out, size=(img_bgr.shape[0], img_bgr.shape[1]), mode="bilinear", align_corners=False)  # back to original size
+    pred = out.argmax(dim=1).squeeze(0).detach().cpu().numpy().astype(np.uint8)
+    # binary sky mask
+    sky_mask = (pred == 10).astype(np.uint8)
+    return sky_mask
+
+def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    bise_model = None
+    if drive_params.use_sky_mask:
+        sys.path.append(os.path.abspath(drive_params.mask_model_path))
+        try:
+            from models import BiSeNetV2
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to load BiSeNetV2, please ensure you've passed the parent directory of the model."
+            )
+        if not os.path.isfile(drive_params.mask_weights_path):
+            raise RuntimeError(f"BiSeNetV2 weights not found at {drive_params.mask_weights_path}")
+        bise_model = BiSeNetV2(n_classes=19)
+        bise_load_weights(bise_model, drive_params.mask_weights_path)
+        bise_model = bise_model.to(lp.data_device)
+        bise_model.eval()
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type) # inside the model we create the optimizer
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    if drive_params.learn_bg:
+        bg_param = torch.nn.Parameter(torch.tensor([
+            drive_params.bg_init,
+            drive_params.bg_init,
+            drive_params.bg_init
+        ], device="cuda"))
+        optim_bg = torch.optim.Adam([bg_param], lr=0.01)
+    else: 
+        optim_bg = None
+    
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -117,13 +179,35 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+                
+        if drive_params.learn_bg and drive_params.use_sky_mask and bise_model != None:
+            if iteration==first_iter:
+                print("Using BiSeNetV2 sky segmentation model for background learning.")
+            sky_mask = infer_bisenetv2(
+                bise_model,
+                cv2.cvtColor((viewpoint_cam.original_image.permute(1,2,0).cpu().numpy() * 255).astype(np.uint8), cv2.COLOR_RGB2BGR),
+                device=dataset.data_device
+            )
+            sky_mask = torch.from_numpy(sky_mask).float().to(dataset.data_device)
+            fg_mask = (1.0 - sky_mask).unsqueeze(0)
+            sky_mask3 = sky_mask.unsqueeze(0)
+            # broacast to [H,2W,3]
+            B = bg_param.view(3,1,1).expand_as(image)
+            # Mix-up: non-sky from the foreground, sky from the learnable background B
+            _mixed_image = (image*fg_mask + B*sky_mask3)
+            # L1 loss calculation
+            Ll1 = (torch.abs(image - gt_image) * fg_mask).sum() / (fg_mask.sum()*3.0 + 1e-8)
+            # SSIM loss on foreground only
+            ssim_fg = ssim(image * fg_mask, gt_image * fg_mask)
+            bg_loss = (torch.abs(B-gt_image) * sky_mask3).sum() / (sky_mask3.sum()*3.0 + 1e-8)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_fg) + drive_params.bg_lambda * bg_loss
         else:
-            ssim_value = ssim(image, gt_image)
-
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+            Ll1 = l1_loss(image, gt_image)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -257,6 +341,7 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
+    dp = DrivingSceneParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -279,7 +364,7 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), dp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")

@@ -99,6 +99,16 @@ class OptimizationParams(ParamGroup):
         self.optimizer_type = "default"
         super().__init__(parser, "Optimization Parameters")
 
+class DrivingSceneParams(ParamGroup):
+    def __init__(self, parser):
+        self.use_sky_mask = False #whether to use sky mask
+        self.mask_model_path = "" #path to the BiSeNetV2 model
+        self.mask_weights_path = "" #path to the BiSeNetV2 weights
+        self.learn_bg = False
+        self.bg_init = 1.0
+        self.bg_lambda = 0.1
+        super().__init__(parser, "Driving Scene Parameters")
+
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]
     cfgfile_string = "Namespace()"
