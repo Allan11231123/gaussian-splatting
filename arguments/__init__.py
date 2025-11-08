@@ -51,6 +51,7 @@ class ModelParams(ParamGroup):
         self._model_path = ""
         self._images = "images"
         self._depths = ""
+        self.custom_depths = ""
         self._resolution = -1
         self._white_background = False
         self.train_test_exp = False
@@ -107,6 +108,7 @@ class DrivingSceneParams(ParamGroup):
         self.learn_bg = False
         self.bg_init = 1.0
         self.bg_lambda = 0.1
+        self.depth_loss = "l1" #loss options for depth regularization: "l1", "huber"
         super().__init__(parser, "Driving Scene Parameters")
 
 def get_combined_args(parser : ArgumentParser):

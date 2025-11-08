@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import torch.nn.functional as F
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, depth_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -157,6 +157,7 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
+        # class 'Camera' can be found in scene/cameras.py
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
@@ -211,7 +212,7 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
 
         # Depth regularization
         Ll1depth_pure = 0.0
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable and False: # Disabled depth regularization with standard depth map
             invDepth = render_pkg["depth"]
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
@@ -222,6 +223,40 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
             Ll1depth = Ll1depth.item()
         else:
             Ll1depth = 0
+
+        # Custom depth regularization with no inverse depth map
+        if depth_l1_weight(iteration) > 0 and viewpoint_cam.custom_invdepthmap is not None and viewpoint_cam.depth_reliable:
+            if drive_params.depth_loss == "l1":
+                if iteration == first_iter:
+                    print("Using custom depth map with L1 loss for depth regularization.")
+                invDepth = render_pkg["depth"]
+                custom_invdepth = viewpoint_cam.custom_invdepthmap.cuda()
+                depth_mask = viewpoint_cam.depth_mask.cuda()
+                # either 'invDepth' or 'custom_invdepth' may have 0 values, cannot simply take inverse value.
+                # convert the 'invDepth' to depth, while not changing the size of tensor
+                invDepth[invDepth!=0] = 1.0 / invDepth[invDepth!=0]
+                custom_invdepth[custom_invdepth!=0] = 1.0 / custom_invdepth[custom_invdepth!=0]
+
+                Ll1depth_pure = torch.abs((invDepth  - custom_invdepth) * depth_mask).mean()
+                Ll1depth_custom = depth_l1_weight(iteration) * Ll1depth_pure 
+                loss += Ll1depth_custom
+                Ll1depth += Ll1depth_custom.item()
+            elif drive_params.depth_loss == "huber":
+                if iteration == first_iter:
+                    print("Using Huber loss for custom depth regularization.")
+                invDepth = render_pkg["depth"]
+                custom_invdepth = viewpoint_cam.custom_invdepthmap.cuda()
+                depth_mask = viewpoint_cam.depth_mask.cuda()
+                # either 'invDepth' or 'custom_invdepth' may have 0 values, cannot simply take inverse value.
+                # convert the 'invDepth' to depth, while not changing the size of tensor
+                invDepth[invDepth!=0] = 1.0 / invDepth[invDepth!=0]
+                custom_invdepth[custom_invdepth!=0] = 1.0 / custom_invdepth[custom_invdepth!=0]
+
+                Ll1depth_pure = F.huber_loss(invDepth * depth_mask, custom_invdepth * depth_mask, reduction='mean')
+                Ll1depth_custom = depth_l1_weight(iteration) * Ll1depth_pure 
+                loss += Ll1depth_custom
+                Ll1depth += Ll1depth_custom.item()
+        
 
         loss.backward()
 

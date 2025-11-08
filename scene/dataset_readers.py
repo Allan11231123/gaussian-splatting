@@ -33,6 +33,7 @@ class CameraInfo(NamedTuple):
     image_path: str
     image_name: str
     depth_path: str
+    custom_depth_path: str
     width: int
     height: int
     is_test: bool
@@ -107,10 +108,11 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
         image_path = os.path.join(images_folder, extr.name)
         image_name = extr.name
-        depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
+        depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" and depths_params != None else ""
+        custom_depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.npy") if depths_folder != "" else ""
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
-                              image_path=image_path, image_name=image_name, depth_path=depth_path,
+                              image_path=image_path, image_name=image_name, depth_path=depth_path, custom_depth_path=custom_depth_path,
                               width=width, height=height, is_test=image_name in test_cam_names_list)
         cam_infos.append(cam_info)
 
@@ -142,7 +144,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+def readColmapSceneInfo(path, images, depths, custom_depths, eval, train_test_exp, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -176,6 +178,8 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
             sys.exit(1)
 
+    if custom_depths != "":
+        depths = custom_depths
     if eval:
         if "360" in path:
             llffhold = 8

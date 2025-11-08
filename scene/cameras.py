@@ -17,7 +17,7 @@ from utils.general_utils import PILtoTorch
 import cv2
 
 class Camera(nn.Module):
-    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap,
+    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap, custom_invdepthmap,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
@@ -59,6 +59,19 @@ class Camera(nn.Module):
 
         self.invdepthmap = None
         self.depth_reliable = False
+        self.custom_invdepthmap = None
+        if custom_invdepthmap is not None:
+            # using custom depth map
+            # it's numpy.ndarray type, not allow to use under other resolution
+            self.custom_invdepthmap = custom_invdepthmap.astype(np.float32)
+            self.depth_reliable = True
+            self.custom_invdepthmap
+            # obtain depth mask where depth is >0 can be seen as valid
+            mask = np.zeros_like(self.custom_invdepthmap, dtype=int)
+            valid = self.custom_invdepthmap > 0
+            mask[valid] = 1
+            self.depth_mask = torch.from_numpy(mask[None])
+            self.custom_invdepthmap = torch.from_numpy(self.custom_invdepthmap[None]).to(self.data_device)
         if invdepthmap is not None:
             self.depth_mask = torch.ones_like(self.alpha_mask)
             self.invdepthmap = cv2.resize(invdepthmap, resolution)

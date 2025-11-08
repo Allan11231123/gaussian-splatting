@@ -89,3 +89,47 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+def charbonnier(x, eps=1e-3):
+    return torch.sqrt(x * x + eps * eps)
+
+def depth_loss(pred_depth, depth_gt, mask_gt, alpha=None, w_alpha=0.0,
+               robust='charbonnier', clip=None, log_depth=False):
+    """
+    pred_depth: (H,W) torch, same unit/coordinate as depth_gt
+    depth_gt:   (H,W) torch
+    mask_gt:    (H,W) torch.bool
+    alpha:      (H,W) torch in [0,1], optional, use for ignoring unvisible regions
+    w_alpha:    alpha weight, 0 means no alpha
+    robust:     'charbonnier' or 'huber'
+    clip:       optional, rip off large residuals, for example (0.1, 80.0)
+    log_depth:  while 'True', comparing in log space(scales be more stable)
+    """
+
+    if clip is not None:
+        d0, d1 = clip
+        pred_depth = pred_depth.clamp(d0, d1)
+        depth_gt   = depth_gt.clamp(d0, d1)
+
+    if log_depth:
+        # avoid log(0), only in valid mask + positive depth
+        eps = 1e-6
+        pred_depth = torch.log(pred_depth.clamp_min(eps))
+        depth_gt   = torch.log(depth_gt.clamp_min(eps))
+
+    resid = pred_depth - depth_gt  # (H,W)
+    if robust == 'charbonnier':
+        perpx = charbonnier(resid)
+    elif robust == 'huber':
+        perpx = F.huber_loss(pred_depth, depth_gt, reduction='none', delta=0.1)
+    else:
+        perpx = resid.abs()
+
+    # merge mask（visible LiDAR + optional alpha）
+    if alpha is not None and w_alpha > 0:
+        weight = mask_gt.float() * (1.0 - w_alpha + w_alpha * alpha)
+    else:
+        weight = mask_gt.float()
+
+    loss = (perpx * weight).sum() / (weight.sum() + 1e-8)
+    return loss

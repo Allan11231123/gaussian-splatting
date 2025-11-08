@@ -19,7 +19,24 @@ WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
     image = Image.open(cam_info.image_path)
-
+    if cam_info.custom_depth_path != "":
+        try:
+            custom_depthmap = np.load(cam_info.custom_depth_path).astype(np.float32)
+            mask = np.isfinite(custom_depthmap)
+            custom_invdepthmap = np.zeros_like(custom_depthmap, dtype=np.float32)
+            valid = mask & (custom_depthmap > 0)
+            custom_invdepthmap[valid] = 1.0 / np.clip(custom_depthmap[valid], 1e-6, None)
+        except FileNotFoundError:
+            print(f"Error: The custom depth file at path '{cam_info.custom_depth_path}' was not found.")
+            raise
+        except IOError:
+            print(f"Error: Unable to open the custom depth file '{cam_info.custom_depth_path}'. It may be corrupted or an unsupported format.")
+            raise
+        except Exception as e:
+            print(f"An unexpected error occurred when trying to read custom depth at {cam_info.custom_depth_path}: {e}")
+            raise
+    else:
+        custom_invdepthmap = None
     if cam_info.depth_path != "":
         try:
             if is_nerf_synthetic:
@@ -62,7 +79,7 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
 
     return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, depth_params=cam_info.depth_params,
-                  image=image, invdepthmap=invdepthmap,
+                  image=image, invdepthmap=invdepthmap, custom_invdepthmap=custom_invdepthmap,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device,
                   train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test)
 
