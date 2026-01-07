@@ -93,6 +93,14 @@ def fast_ssim(img1, img2):
 def charbonnier(x, eps=1e-3):
     return torch.sqrt(x * x + eps * eps)
 
+def entropy_loss(opacity_map, limit_epsilon=1e-5):
+    """
+    opacity_map: (H,W) torch, in [0,1]
+    """
+    opacity_clamped = torch.clamp(opacity_map, limit_epsilon, 1.0 - limit_epsilon)
+    ent = - (opacity_clamped * torch.log(opacity_clamped) + (1.0 - opacity_clamped) * torch.log(1.0 - opacity_clamped))
+    return ent.mean()
+
 def depth_loss(pred_depth, depth_gt, mask_gt, alpha=None, w_alpha=0.0,
                robust='charbonnier', clip=None, log_depth=False):
     """

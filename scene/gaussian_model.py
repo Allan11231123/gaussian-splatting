@@ -21,6 +21,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+import pcl_curvature
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
@@ -155,9 +156,30 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
-        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        point_cloud_normal = torch.tensor(np.asarray(pcd.normals)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        # compute curvature with input pointcloud
+        target_points = np.asarray(pcd.points).astype(np.float64)
+        result = pcl_curvature.compute(target_points, 2.0)
+        k1 = result[:, 3]
+        nan_points = np.sum(np.isnan(k1))
+        print(f"Computed curvature for {pcd.points.shape[0]} points, with {nan_points} NaN values.")
+        k1 = np.nan_to_num(k1, nan=0.0)
+        # Filtering based on curvature threshold
+        keep_threshold = 90
+        threshold_value = np.percentile(k1, keep_threshold)
+        mask = (k1 < threshold_value) & (k1 > 0)
+        filtered_points = np.asarray(pcd.points)[mask]
+        filtered_normals = np.asarray(pcd.normals)[mask]
+        filtered_colors = np.asarray(pcd.colors)[mask]
+        removed_count = pcd.points.shape[0] - filtered_points.shape[0]
+        print(f"Removed {removed_count} points based on curvature threshold ({keep_threshold}th percentile).")
+
+        # fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        # point_cloud_normal = torch.tensor(np.asarray(pcd.normals)).float().cuda()
+        # fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        fused_point_cloud = torch.tensor(filtered_points).float().cuda()
+        point_cloud_normal = torch.tensor(filtered_normals).float().cuda()
+        fused_color = RGB2SH(torch.tensor(filtered_colors).float().cuda())
+
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
@@ -165,8 +187,12 @@ class GaussianModel:
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
         print("Check for point cloud normal : ", point_cloud_normal.shape[0])
 
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # Use fixed scale value instead of distance to nearest neighbor
+        fixed_scale = 0.01  # Adjust this value as needed
+        scales = torch.full((fused_point_cloud.shape[0], 1), fixed_scale, device="cuda", dtype=torch.float).repeat(1, 3)
+        scales = torch.log(torch.sqrt(scales))
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -610,6 +636,8 @@ class GaussianModel:
         self.densify_and_split_normal(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+        big_gaussians_mask = self.get_scaling.max(dim=1).values > 0.2
+        prune_mask = torch.logical_or(prune_mask, big_gaussians_mask)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent

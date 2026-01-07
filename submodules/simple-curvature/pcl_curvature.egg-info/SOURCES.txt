@@ -1,0 +1,8 @@
+pyproject.toml
+setup.py
+pcl_curvature.egg-info/PKG-INFO
+pcl_curvature.egg-info/SOURCES.txt
+pcl_curvature.egg-info/dependency_links.txt
+pcl_curvature.egg-info/not-zip-safe
+pcl_curvature.egg-info/top_level.txt
+src/pcl_curvature.cpp

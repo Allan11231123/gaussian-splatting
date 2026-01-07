@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import torch.nn.functional as F
 from random import randint
-from utils.loss_utils import l1_loss, ssim, depth_loss
+from utils.loss_utils import l1_loss, ssim, depth_loss, entropy_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -174,12 +174,24 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        # render for opacity map
+        override_color = torch.ones_like(gaussians.get_xyz, dtype=torch.float32, device="cuda")
+        opacity_render_pkg = render(
+            viewpoint_cam, gaussians, pipe,
+            bg_color=torch.zeros(3, dtype=torch.float32, device="cuda"),
+            use_trained_exp=dataset.train_test_exp,
+            separate_sh=SPARSE_ADAM_AVAILABLE,
+            override_color=override_color
+        )
+        opacity_map = opacity_render_pkg["render"][0:1,:,:]  # H x W
+
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
+        image_unsqueezed_size = None
                 
         if drive_params.learn_bg and drive_params.use_sky_mask and bise_model != None:
             if iteration==first_iter:
@@ -203,12 +215,27 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
             bg_loss = (torch.abs(B-gt_image) * sky_mask3).sum() / (sky_mask3.sum()*3.0 + 1e-8)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_fg) + drive_params.bg_lambda * bg_loss
         else:
-            Ll1 = l1_loss(image, gt_image)
+            invDepth = render_pkg["depth"]
+            # invDepth_size = invDepth.size() # dimensions: 1 x H x W
+            mask = (invDepth > 0).float() # dimensions: 1 x H x W
+            Ll1 = l1_loss(image*mask, gt_image*mask)
             if FUSED_SSIM_AVAILABLE:
-                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+                ssim_value = fused_ssim((image*mask).unsqueeze(0), (gt_image*mask).unsqueeze(0))
             else:
-                ssim_value = ssim(image, gt_image)
+                ssim_value = ssim(image*mask, gt_image*mask)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+
+        # Isotropic loss
+        scaling = gaussians.get_scaling
+        isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1)).mean()
+        # isotropic_loss = torch.abs(scaling - 0.2).mean()
+        entropy_loss_value = entropy_loss(opacity_map)
+        loss += opt.lambda_entropy * entropy_loss_value
+        loss += opt.lambda_iso * isotropic_loss
+
+        # Scaling loss
+        scaling_loss = torch.relu(scaling - 0.1).mean()
+        loss += opt.lambda_scale * scaling_loss
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -267,8 +294,14 @@ def training(dataset, opt, pipe, drive_params, testing_iterations, saving_iterat
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
+            gaussians_num = gaussians.get_xyz.shape[0]
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
+                                          "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}",
+                                          "Gaussians": f"{gaussians_num}",
+                                        #   "image dimensions": f"{image.shape}"
+                                          "Entropy Loss": f"{entropy_loss_value:.{7}f}"
+                                          })
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()

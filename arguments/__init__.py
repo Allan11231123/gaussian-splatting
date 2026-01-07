@@ -47,6 +47,8 @@ class ParamGroup:
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
+        self.normal_radius = 10.0
+        self.normal_max_nn = 16
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
@@ -89,6 +91,9 @@ class OptimizationParams(ParamGroup):
         self.exposure_lr_delay_mult = 0.0
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        self.lambda_iso = 10.0
+        self.lambda_entropy = 0.01
+        self.lambda_scale = 0.1
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

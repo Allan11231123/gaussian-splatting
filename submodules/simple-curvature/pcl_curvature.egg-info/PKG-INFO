@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: pcl_curvature
+Version: 0.1.0
+Summary: PCL-based curvature computation via pybind11
+Author: Allan
+Dynamic: author
+Dynamic: summary

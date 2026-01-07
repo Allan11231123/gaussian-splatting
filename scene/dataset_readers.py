@@ -144,7 +144,7 @@ def storePly(path, xyz, normals, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, depths, custom_depths, eval, train_test_exp, llffhold=8):
+def readColmapSceneInfo(path, images, depths, custom_depths, eval, train_test_exp, k, r, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -212,10 +212,12 @@ def readColmapSceneInfo(path, images, depths, custom_depths, eval, train_test_ex
     if not os.path.exists(ply_path):
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         try:
-            xyz, normals, rgb, _ = read_points3D_binary(bin_path)
+            xyz, normals, rgb, _ = read_points3D_binary(bin_path, k=k, r=r)
+            print("Successfully create normals from binary file.")
         except:
-            xyz, rgb, _ = read_points3D_text(txt_path)
-            normals = np.zeros_like(xyz)
+            xyz, normals, rgb, _ = read_points3D_text(txt_path, k=k, r=r)
+            # normals = np.zeros_like(xyz)
+            print("Successfully created empty normals from text file.")
         storePly(ply_path, xyz, normals, rgb)
     try:
         pcd = fetchPly(ply_path)

@@ -10,6 +10,7 @@
 #
 
 import numpy as np
+import open3d as o3d
 import collections
 import struct
 
@@ -80,7 +81,7 @@ def read_next_bytes(fid, num_bytes, format_char_sequence, endian_character="<"):
     data = fid.read(num_bytes)
     return struct.unpack(endian_character + format_char_sequence, data)
 
-def read_points3D_text(path):
+def read_points3D_text(path,k: int=8, r: float=3.0):
     """
     see: src/base/reconstruction.cc
         void Reconstruction::ReadPoints3DText(const std::string& path)
@@ -119,10 +120,14 @@ def read_points3D_text(path):
                 rgbs[count] = rgb
                 errors[count] = error
                 count += 1
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyzs)
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=r, max_nn=k))
+    pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0,0.0,0.0], dtype=np.float32))
+    normals = np.asarray(pcd.normals)
+    return xyzs, normals, rgbs, errors
 
-    return xyzs, rgbs, errors
-
-def read_points3D_binary(path_to_model_file):
+def read_points3D_binary(path_to_model_file, k: int=8, r: float=3.0):
     """
     see: src/base/reconstruction.cc
         void Reconstruction::ReadPoints3DBinary(const std::string& path)
@@ -133,48 +138,29 @@ def read_points3D_binary(path_to_model_file):
     with open(path_to_model_file, "rb") as fid:
         num_points = read_next_bytes(fid, 8, "Q")[0]
 
-        try:
-            xyzs = np.empty((num_points, 3))
-            normals = np.empty((num_points, 3))
-            rgbs = np.empty((num_points, 3))
-            errors = np.empty((num_points, 1))
+        xyzs = np.empty((num_points, 3))
+        rgbs = np.empty((num_points, 3))
+        errors = np.empty((num_points, 1))
 
-            for p_id in range(num_points):
-                binary_point_line_properties = read_next_bytes(
-                    fid, num_bytes=43, format_char_sequence="QddddddBBBd")
-                xyz = np.array(binary_point_line_properties[1:4])
-                normal = np.array(binary_point_line_properties[4:7])
-                rgb = np.array(binary_point_line_properties[7:10])
-                error = np.array(binary_point_line_properties[10])
-                track_length = read_next_bytes(
-                    fid, num_bytes=8, format_char_sequence="Q")[0]
-                track_elems = read_next_bytes(
-                    fid, num_bytes=8*track_length,
-                    format_char_sequence="ii"*track_length)
-                xyzs[p_id] = xyz
-                normals[p_id] = normal
-                rgbs[p_id] = rgb
-                errors[p_id] = error
-        except:
-            xyzs = np.empty((num_points, 3))
-            rgbs = np.empty((num_points, 3))
-            errors = np.empty((num_points, 1))
-            normals = np.zeros_like(xyzs)
-
-            for p_id in range(num_points):
-                binary_point_line_properties = read_next_bytes(
-                    fid, num_bytes=35, format_char_sequence="QdddBBBd")
-                xyz = np.array(binary_point_line_properties[1:4])
-                rgb = np.array(binary_point_line_properties[4:7])
-                error = np.array(binary_point_line_properties[7])
-                track_length = read_next_bytes(
-                    fid, num_bytes=8, format_char_sequence="Q")[0]
-                track_elems = read_next_bytes(
-                    fid, num_bytes=8*track_length,
-                    format_char_sequence="ii"*track_length)
-                xyzs[p_id] = xyz
-                rgbs[p_id] = rgb
-                errors[p_id] = error
+        for p_id in range(num_points):
+            binary_point_line_properties = read_next_bytes(
+                fid, num_bytes=35, format_char_sequence="QdddBBBd")
+            xyz = np.array(binary_point_line_properties[1:4])
+            rgb = np.array(binary_point_line_properties[4:7])
+            error = np.array(binary_point_line_properties[7])
+            track_length = read_next_bytes(
+                fid, num_bytes=8, format_char_sequence="Q")[0]
+            track_elems = read_next_bytes(
+                fid, num_bytes=8*track_length,
+                format_char_sequence="ii"*track_length)
+            xyzs[p_id] = xyz
+            rgbs[p_id] = rgb
+            errors[p_id] = error
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyzs)
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=r, max_nn=k))
+        pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0,0.0,0.0], dtype=np.float32))
+        normals = np.asarray(pcd.normals)
     return xyzs, normals, rgbs, errors
 
 def read_intrinsics_text(path):
