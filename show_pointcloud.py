@@ -4,6 +4,7 @@
 import sys
 import argparse
 import open3d as o3d
+import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -54,6 +55,10 @@ def main():
                 max_nn=30
             )
         )
+    # Set pointcloud color to single value that is easy to review
+    colors = np.zeros_like(pcd.points)
+    colors[:,0] = 1
+    pcd.colors = o3d.utility.Vector3dVector(colors)
     # Visualize
     o3d.visualization.draw_geometries(
         [pcd],
