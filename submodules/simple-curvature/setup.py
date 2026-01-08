@@ -1,8 +1,9 @@
 # setup.py
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
-import sys
+import sys, os
 import subprocess
+import platform
 import pybind11
 
 
@@ -43,38 +44,82 @@ class BuildExt(build_ext):
             ext.extra_compile_args = opts + ext.extra_compile_args
         build_ext.build_extensions(self)
 
-
-# PCL component that you use, commonly seen: common / features / search / kdtree
-pcl_pkgs = ["pcl_common-1.12", "pcl_features-1.12", "pcl_search-1.12", "pcl_kdtree-1.12", "eigen3"]
-# Note: Based on your PCL installation, the version number (e.g., 1.12) may vary.
-# You can check the exact package names using:
-#   pkg-config --list-all | grep pcl
-
-cflags = pkg_config_cflags(pcl_pkgs)
-libs = pkg_config_libs(pcl_pkgs)
-
-ext_modules = [
-    Extension(
-        "pcl_curvature",
-        ["src/pcl_curvature.cpp"],
-        include_dirs=[
-            pybind11.get_include(),
-            pybind11.get_include(user=True),
-            # "/usr/include",
-        ],
-        library_dirs=["/usr/lib/x86_64-linux-gnu","/usr/lib"],
-        extra_compile_args=cflags,
-        extra_link_args=libs,
-        language="c++",
+if platform.system() == "Windows":
+    pcl_root = r"C:\Program Files\PCL 1.15.1"
+    include_dirs = [
+        pybind11.get_include(),
+        os.path.join(pcl_root,"include","pcl-1.15"),
+        os.path.join(pcl_root,"3rdParty","Eigen3","include","eigen3"),
+        os.path.join(pcl_root,"3rdParty","FLANN","include"),
+        os.path.join(pcl_root,"3rdParty","Boost","include","boost-1_87")
+    ]
+    library_dirs = [
+        os.path.join(pcl_root,"lib")
+    ]
+    libraries = [
+        "pcl_common","pcl_features","pcl_search","pcl_kdtree"
+    ]
+    cxx_args = [
+        "/std:c++17",
+        "/bigobj",
+        "/O2",
+        "/EHsc",
+        "/arch:AVX",
+        "/DNOMINMAX",
+        "/D_USE_MATH_DEFINES"
+    ]
+    ext_modules = [
+        Extension(
+            "pcl_curvature",
+            ["src/pcl_curvature.cpp"],
+            include_dirs=include_dirs,
+            library_dirs=library_dirs,
+            libraries=libraries,
+            language="c++",
+            extra_compile_args=cxx_args
+        )
+    ]
+    setup(
+        name="pcl_curvature",
+        version="0.1.0",
+        author="Allan",
+        description="PCL-based curvature computation via pybind11",
+        ext_modules=ext_modules,
+        cmdclass={"build_ext": BuildExt},
+        zip_safe=False,
     )
-]
-
-setup(
-    name="pcl_curvature",
-    version="0.1.0",
-    author="Allan",
-    description="PCL-based curvature computation via pybind11",
-    ext_modules=ext_modules,
-    cmdclass={"build_ext": BuildExt},
-    zip_safe=False,
-)
+else:
+    # PCL component that you use, commonly seen: common / features / search / kdtree
+    pcl_pkgs = ["pcl_common-1.12", "pcl_features-1.12", "pcl_search-1.12", "pcl_kdtree-1.12", "eigen3"]
+    # Note: Based on your PCL installation, the version number (e.g., 1.12) may vary.
+    # You can check the exact package names using:
+    #   pkg-config --list-all | grep pcl
+    
+    cflags = pkg_config_cflags(pcl_pkgs)
+    libs = pkg_config_libs(pcl_pkgs)
+    
+    ext_modules = [
+        Extension(
+            "pcl_curvature",
+            ["src/pcl_curvature.cpp"],
+            include_dirs=[
+                pybind11.get_include(),
+                pybind11.get_include(user=True),
+                # "/usr/include",
+            ],
+            library_dirs=["/usr/lib/x86_64-linux-gnu","/usr/lib"],
+            extra_compile_args=cflags,
+            extra_link_args=libs,
+            language="c++",
+        )
+    ]
+    
+    setup(
+        name="pcl_curvature",
+        version="0.1.0",
+        author="Allan",
+        description="PCL-based curvature computation via pybind11",
+        ext_modules=ext_modules,
+        cmdclass={"build_ext": BuildExt},
+        zip_safe=False,
+    )
